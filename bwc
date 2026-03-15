@@ -1,0 +1,270 @@
+#!/bin/bash
+set -e
+
+cd "/usr/lib"
+
+function shutdown() {
+    # disable mouse events
+    echo -e "\e[?1000l"
+    cls
+}
+trap shutdown EXIT
+
+TERM_WIDTH=80
+TERM_HEIGHT=40
+function resize() {
+    while read -t 0 -rs; do
+        true
+    done
+
+    local X=1000000
+    local Y=1000000
+    # set cursor pos
+    echo -en "\e[${Y};${X}H"
+    # request cursor location
+    echo -en "\e[6n"
+    read -rsd '[' # throw away
+    read -rsd ';' TERM_HEIGHT
+    read -rsd 'R' TERM_WIDTH
+}
+RESIZE_ON_NEXT_TICK=0
+trap 'RESIZE_ON_NEXT_TICK=1' SIGWINCH
+
+TICKS=0
+function ticktock() {
+    #echo -e "\e[2J\e[2JTERM: ($TERM_WIDTH x $TERM_HEIGHT) $(date)"
+    #echo -en ""
+    TICKS=$((TICKS + 1))
+}
+
+function cls() {
+    echo -en "\e[2J\e[1;1H"
+}
+
+function redraw() {
+    # clear screen
+    #cls
+    
+    # position "top left"
+    END=$((TERM_HEIGHT + SCROLL_POS))
+    for (( i = SCROLL_POS; i < END; i++ )); do
+        redraw_line $i
+    done
+}
+
+function redraw_line() {
+    # nothing to do if file index is outside visible area
+    if [ "$1" -lt $SCROLL_POS ] || [ "$1" -gt $((SCROLL_POS + TERM_HEIGHT - 1)) ]; then
+        return
+    fi
+
+    # reposition the cursor
+    echo -en "\e[$(($1 - SCROLL_POS + 1));1H"
+
+    if [ "$1" -eq $SELECTED_FILE_INDEX ]; then
+        # set the highlight colour
+        echo -en "\033[48;5;57m"
+    fi
+    # blank the line (with the highlight colour)
+    echo -en "\e[2K"
+
+    echo -n "${FILE_LIST[$1]}"
+    # clear the colour
+    echo -en "\033[39m\033[49m"
+}
+
+SCROLL_POS=0
+CURRENT_DIRECTORY=""
+FILE_LIST=()
+function change_directory() {
+    CURRENT_DIRECTORY="$1"
+    cd "$CURRENT_DIRECTORY"
+
+    # discard warnings about permission denied etc to /dev/null
+    mapfile -t FILE_LIST < <(find . -maxdepth 1 -printf "%M %y %4b %-7.7u %-7.7g %f\n" | sort -k 5 2> /dev/null)
+    SCROLL_POS=0
+    SELECTED_FILE_INDEX=0
+
+    redraw
+}
+
+SELECTED_FILE_INDEX=0
+function move_selection() {
+    PREV_SELECTED_FILE_INDEX=$SELECTED_FILE_INDEX
+    if [ "$1" -lt 0 ] && [ $SELECTED_FILE_INDEX -gt 0 ]; then
+        # up
+        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
+        if [ $SELECTED_FILE_INDEX -lt 0 ]; then
+            # boundary enforcement (can't select beyond 0)
+            SELECTED_FILE_INDEX=0
+        fi
+    elif [ "$1" -gt 0 ] && [ $SELECTED_FILE_INDEX -lt $((${#FILE_LIST[@]} - 1)) ]; then
+        # down
+        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
+        if [ $SELECTED_FILE_INDEX -ge ${#FILE_LIST[@]} ]; then
+            # boundary enforcement (can't select beyond the end of the file list)
+            SELECTED_FILE_INDEX=$((${#FILE_LIST[@]} - 1))
+        fi
+    fi
+
+    if [ $SELECTED_FILE_INDEX -lt $((SCROLL_POS + 1)) ] && [ $SCROLL_POS -gt 0 ]; then 
+        # the screen needs to "scroll up"
+        SCROLL_POS=$((SELECTED_FILE_INDEX - 1))
+        if [ $SCROLL_POS -lt 0 ]; then
+            # boundary enforcement (can't scroll beyond 0)
+            SCROLL_POS=0
+        fi
+        redraw
+    elif [ $SELECTED_FILE_INDEX -gt $((SCROLL_POS + TERM_HEIGHT - 2)) ]; then
+        # the screen needs to "scroll down"
+        SCROLL_POS=$((SELECTED_FILE_INDEX - TERM_HEIGHT + 2))
+        redraw
+    else
+        # partial redraw only
+        redraw_line $PREV_SELECTED_FILE_INDEX
+        redraw_line $SELECTED_FILE_INDEX
+    fi
+}
+
+# useful constants
+ESC="$(echo -ne "\e")"
+BS="$(echo -ne "\b")"
+
+# start-up
+resize
+change_directory "$(pwd)"
+
+# enable "extended" mouse inputs
+echo -ne "\e[?1000h\e[?1006h"
+
+# main loop
+ESC_CODE=""
+TICKTOCK=0
+LAST_CLICK_TICKS=-1
+LAST_CLICKED_FILE_INDEX=-1
+# note -t essentially sets double click speed, as well as visual refresh of clocks etc
+while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
+    if [ $TICKTOCK -eq 1 ]; then
+        TICKTOCK=0
+
+        if [ $RESIZE_ON_NEXT_TICK -eq 1 ]; then
+            resize
+            RESIZE_ON_NEXT_TICK=0
+        fi
+
+        ticktock
+        continue
+    fi
+
+    #printf "%3d" "'$CHAR"
+    if [ "$CHAR" == "$ESC" ]; then
+        ESC_CODE="$ESC"
+        #echo "hi"
+    elif [ -n "$ESC_CODE" ]; then
+        ESC_CODE="${ESC_CODE}${CHAR}"
+        case "$ESC_CODE" in
+            "${ESC}[<")
+                # mouse event
+                read -rsd ';' EVENT
+                read -rsd ';' X
+                read -rsn 1 Y
+                read -rsn 1 C
+                case "$C" in
+                    [mM])
+                        M="$C"
+                        ;;
+                    *)
+                        Y="${Y}${C}"
+                        read -rs -N 1 M
+                        ;;
+                esac
+
+               # movecur 
+                #echo -ne "\nMOUSE $EVENT $M ( $X, $Y )"
+                case "$M" in
+                    M)
+                        # mouse "down"
+                        case "$EVENT" in
+                            64)
+                                # scroll up
+                                if [ $SCROLL_POS -gt 0 ]; then
+                                    SCROLL_POS=$((SCROLL_POS - 1))
+                                    redraw
+                                fi
+                                ;;
+                            65)
+                                # scroll down
+                                if [ $SCROLL_POS -lt $((${#FILE_LIST[@]} - 6)) ]; then
+                                    SCROLL_POS=$((SCROLL_POS + 1))
+                                    redraw
+                                fi
+                                ;;
+                        esac
+                        ;;
+                    m)
+                        # mouse "up"
+                        CLICKED_FILE_INDEX=$((SCROLL_POS + Y - 1))
+
+                        if [ $TICKS -eq $LAST_CLICK_TICKS ] && [ $LAST_CLICKED_FILE_INDEX -eq $CLICKED_FILE_INDEX ]; then
+                            # double click
+                            action_selected
+
+                            # clear double-click
+                            LAST_CLICK_TICKS=-1
+                        else
+                            # single click
+                            move_selection $((CLICKED_FILE_INDEX - SELECTED_FILE_INDEX))
+                        fi
+
+                        LAST_CLICKED_FILE_INDEX=$CLICKED_FILE_INDEX
+                        LAST_CLICK_TICKS=$TICKS
+                        ;;
+                esac
+                ESC_CODE="" ;;
+            
+            "${ESC}[A")
+                # UP
+                move_selection -1
+                ESC_CODE="" ;;
+
+            "${ESC}[B")
+                # DOWN
+                move_selection 1
+                ESC_CODE="" ;;
+
+            "${ESC}[C")
+                # RIGHT
+                ESC_CODE="" ;;
+
+            "${ESC}[D")
+                # LEFT
+                ESC_CODE="" ;;
+            
+            *)
+                if [ ${#ESC_CODE} -gt 10 ]; then
+                    echo "SOMETHING BROKE #1: $ESC_CODE"
+                fi
+            ;;
+        esac
+    else
+        printf "%3d" "'$CHAR"
+        case "$CHAR" in
+            s)
+                cls
+                ;;
+            $'\n')
+                if [ "$(printf "%s" "${FILE_LIST[$SELECTED_FILE_INDEX]}" | tr -s ' ' | cut -d ' ' -f 2)" == "d" ]; then
+                    change_directory "$(printf "%s" "${FILE_LIST[$SELECTED_FILE_INDEX]}" | tr -s ' ' | cut -d ' ' -f 6-)"
+                fi
+                ;;
+            $'\x7F')
+                change_directory '..'
+                ;;
+            *)
+                # keypress
+                echo -ne "$CHAR"
+                
+                ;;
+        esac
+    fi
+done
