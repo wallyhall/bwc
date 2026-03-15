@@ -165,6 +165,12 @@ function scroll() {
     fi
 }
 
+function action_selected() {
+    if [ "$(get_selected_file_property 2)" == "d" ]; then
+        change_directory "$(get_selected_file_property 6-)"
+    fi
+}
+
 function get_selected_file_property() {
     printf "%s" "${FILE_LIST[$SELECTED_FILE_INDEX]}" | tr -s ' ' | cut -d ' ' -f "$1"
 }
@@ -301,9 +307,7 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                 ;;
             $'\n')
                 # enter key
-                if [ "$(get_selected_file_property 2)" == "d" ]; then
-                    change_directory "$(get_selected_file_property 6-)"
-                fi
+                action_selected
                 ;;
             $'\x7F')
                 # backspace
