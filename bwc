@@ -126,6 +126,10 @@ function move_selection() {
     fi
 }
 
+function get_selected_file_property() {
+    printf "%s" "${FILE_LIST[$SELECTED_FILE_INDEX]}" | tr -s ' ' | cut -d ' ' -f "$1"
+}
+
 # useful constants
 ESC="$(echo -ne "\e")"
 BS="$(echo -ne "\b")"
@@ -253,8 +257,8 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                 cls
                 ;;
             $'\n')
-                if [ "$(printf "%s" "${FILE_LIST[$SELECTED_FILE_INDEX]}" | tr -s ' ' | cut -d ' ' -f 2)" == "d" ]; then
-                    change_directory "$(printf "%s" "${FILE_LIST[$SELECTED_FILE_INDEX]}" | tr -s ' ' | cut -d ' ' -f 6-)"
+                if [ "$(get_selected_file_property 2)" == "d" ]; then
+                    change_directory "$(get_selected_file_property 6-)"
                 fi
                 ;;
             $'\x7F')
