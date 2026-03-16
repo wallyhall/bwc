@@ -34,8 +34,13 @@ function flush_read_buffer() {
     done
 }
 
-TERM_WIDTH=80
-TERM_HEIGHT=40
+HEADER_HEIGHT=1
+FOOTER_HEIGHT=1
+
+TERM_WIDTH=80   # placeholder ... will be set correctly by initial resize
+TERM_HEIGHT=40  # placeholder ... will be set correctly by initial resize
+BODY_HEIGHT=38  # placeholder ... will be set correctly by initial resize
+
 function resize() {
     # clear read buffer
     flush_read_buffer
@@ -52,6 +57,8 @@ function resize() {
     read -rsd '[' # throw away
     read -rsd ';' TERM_HEIGHT
     read -rsd 'R' TERM_WIDTH
+
+    BODY_HEIGHT=$((TERM_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT))
 
     redraw
 }
@@ -70,24 +77,29 @@ function cls() {
 }
 
 function redraw() {
-    # clear screen
-    #cls
-    
-    # position "top left"
-    local END=$((TERM_HEIGHT + SCROLL_POS))
+    # menu at top
+    echo -en "\e[1;1H"
+    echo -en "--> MENU <--"
+
+    # file list area
+    local END=$((BODY_HEIGHT + SCROLL_POS))
     for (( i = SCROLL_POS; i < END; i++ )); do
         redraw_line $i
     done
+
+    # summary at bottom
+    echo -en "\e[$TERM_HEIGHT;1H"
+    echo -en "--> summary bar <--"
 }
 
 function redraw_line() {
     # nothing to do if file index is outside visible area
-    if [ "$1" -lt $SCROLL_POS ] || [ "$1" -gt $((SCROLL_POS + TERM_HEIGHT - 1)) ]; then
+    if [ "$1" -lt $SCROLL_POS ] || [ "$1" -gt $((SCROLL_POS + BODY_HEIGHT - 1)) ]; then
         return
     fi
 
     # reposition the cursor
-    echo -en "\e[$(($1 - SCROLL_POS + 1));1H"
+    echo -en "\e[$(($1 - SCROLL_POS + 2));1H"
 
     if [ "$1" -eq $SELECTED_FILE_INDEX ]; then
         # set the highlight colour
@@ -115,7 +127,7 @@ function redraw_line() {
         LINE=$'\036'"${LINE##*$'\036'}"
     fi
 
-    if [ "${#LINE}" -gt $TERM_WIDTH ]; then
+    if [ "${#LINE}" -gt "$TERM_WIDTH" ]; then
         if [ "$1" -eq $SELECTED_FILE_INDEX ]; then
             # if the selected line is "too long",
             # attempt to show as much as possible of the filename.
@@ -137,9 +149,12 @@ function formatter() {
     # available on a good number of systems).
 
     # read will chomp leading whitespace, which we want.
+    i=0
     cat - | tr -s ' ' | while read -sr LINE; do
-        # drop the first two columns (inode number and blocks on disk)
-        LINE="${LINE#* * }"
+        if [ $i -eq 0 ]; then
+            i=$((i + 1))
+            continue
+        fi
         
         PERMS="${LINE:0:10}"
         LINE="${LINE#* }"
@@ -163,25 +178,30 @@ function formatter() {
         DATE3="${LINE%% *}"
         LINE="${LINE#* }"
 
-        FILENAME="${LINE%%./}"
-        if [ "$FILENAME" != "." ]; then
-            FILENAME="${FILENAME:2}"
+        FILENAME="${LINE% *}"
+
+        if [ ${#OWNER} -gt 9 ]; then
+            OWNER="${OWNER:0:8}~"
+        fi
+
+        if [ ${#GROUP} -gt 9 ]; then
+            GROUP="${GROUP:0:8}~"
         fi
 
         if [ "$BYTES" -ge 1099511627776 ]; then
-            SIZE="$((BYTES / 1099511627776))TiB"
+            SIZE="$((BYTES / 1099511627776))T"
         elif [ "$BYTES" -ge 1073741824 ]; then
-            SIZE="$((BYTES / 1073741824))GiB"
+            SIZE="$((BYTES / 1073741824))G"
         elif [ "$BYTES" -ge 1048576 ]; then
-            SIZE="$((BYTES / 1048576))MiB"
+            SIZE="$((BYTES / 1048576))M"
         elif [ "$BYTES" -ge 1024 ]; then
-            SIZE="$((BYTES / 1024))KiB"
+            SIZE="$((BYTES / 1024))K"
         else
-            SIZE="${BYTES}B  "
+            SIZE="${BYTES}"
         fi
 
         # ASCII \036 (field separator) is used to delimit the filename
-        printf "%s %5.5s %-8.8s %-8.8s %6.6s %3.3s %2.2s %-5.5s \036%s\n" "$PERMS" "$HARDLINKS" "$OWNER" "$GROUP" "$SIZE" "$DATE1" "$DATE2" "$DATE3" "$FILENAME"
+        printf "%s %5.5s %-9.9s %-9.9s %6.6s %3.3s %2.2s %5.5s \036%s\n" "$PERMS" "$HARDLINKS" "$OWNER" "$GROUP" "$SIZE" "$DATE1" "$DATE2" "$DATE3" "$FILENAME"
 
         # print on the columns we're interested in
         #printf "%s %s %s %s" "${COLS[3]}" "${COLS[4]}" "${COLS[5]}" "${COLS[6]}"
@@ -192,12 +212,12 @@ function confirm() {
     RESULT=127
 
     # scroll selected file into view if it's off-screen
-    if [ "$SELECTED_FILE_INDEX" -lt $SCROLL_POS ] || [ "$SELECTED_FILE_INDEX" -gt $((SCROLL_POS + TERM_HEIGHT - 1)) ]; then
+    if [ "$SELECTED_FILE_INDEX" -lt $SCROLL_POS ] || [ "$SELECTED_FILE_INDEX" -gt $((SCROLL_POS + BODY_HEIGHT - 1)) ]; then
         scroll_to_and_redraw
     fi
 
     # reposition the cursor
-    echo -en "\e[$((SELECTED_FILE_INDEX - SCROLL_POS + 1));1H"
+    echo -en "\e[$((SELECTED_FILE_INDEX - SCROLL_POS + 1 + HEADER_HEIGHT));1H"
 
     # set the highlight colour
     echo -en "\033[48;5;11m"
@@ -231,8 +251,11 @@ function change_directory() {
     cd "$CURRENT_DIRECTORY"
     
     # discard warnings about permission denied etc to /dev/null
+    # any POSIX system should work with `ls -l`.  On fewer platforms, find could be used:
     #mapfile -t FILE_LIST < <(find . -maxdepth 1 -printf "%M %y %s %-7.7u %-7.7g %f\n" | sort -k 5 2> /dev/null)
-    mapfile -t FILE_LIST < <(POSIXLY_CORRECT=1 find . -maxdepth 1 -ls | formatter | sort -b -k 9 2> /dev/null)
+    #mapfile -t FILE_LIST < <(POSIXLY_CORRECT=1 find . -maxdepth 1 -ls | formatter | sort -b -k 9 2> /dev/null)
+    # shellcheck disable=SC2012
+    mapfile -t FILE_LIST < <(LC_ALL=C ls -la | formatter 2> /dev/null)
     SCROLL_POS=0
     SELECTED_FILE_INDEX=0
 
@@ -248,9 +271,9 @@ function scroll_to_and_redraw() {
             SCROLL_POS=0
         fi
         redraw
-    elif [ $SELECTED_FILE_INDEX -gt $((SCROLL_POS + TERM_HEIGHT - 2)) ]; then
+    elif [ $SELECTED_FILE_INDEX -gt $((SCROLL_POS + BODY_HEIGHT - 2)) ]; then
         # the screen needs to "scroll down"
-        SCROLL_POS=$((SELECTED_FILE_INDEX - TERM_HEIGHT + 2))
+        SCROLL_POS=$((SELECTED_FILE_INDEX - BODY_HEIGHT + 2))
         redraw
     else
         # partial redraw only
@@ -430,7 +453,7 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                         ;;
                     m)
                         # mouse "up"
-                        CLICKED_FILE_INDEX=$((SCROLL_POS + Y - 1))
+                        CLICKED_FILE_INDEX=$((SCROLL_POS + Y - 1 - HEADER_HEIGHT))
 
                         if [ $TICKS -eq $LAST_CLICK_TICKS ] && [ $LAST_CLICKED_FILE_INDEX -eq $CLICKED_FILE_INDEX ]; then
                             # double click
@@ -469,12 +492,12 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
             
             "${ESC}[5~")
                 # PGUP
-                scroll $((0 - TERM_HEIGHT + 1))
+                scroll $((0 - BODY_HEIGHT + 1))
                 ;;
 
             "${ESC}[6~")
                 # PGDOWN
-                scroll $((TERM_HEIGHT - 1))
+                scroll $((BODY_HEIGHT - 1))
                 ;;
 
             *)
