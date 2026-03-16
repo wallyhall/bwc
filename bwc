@@ -92,7 +92,7 @@ function redraw() {
 
     # footer
     echo -en "\e[$TERM_HEIGHT;1H\033[48;5;19m\e[2K"
-    echo -en " (q)uit  (s)crn_rfsh"
+    echo -en " (q)uit  (s)crn_rfsh  (bskp).."
 
     # clear all colours
     echo -en "\e[0m"
@@ -499,11 +499,21 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
             
             "${ESC}[5~")
                 # PGUP
+                move_selection $((0 - BODY_HEIGHT + 1))
+                ;;
+
+            "${ESC}[5;5~")
+                # ^PGUP
                 scroll $((0 - BODY_HEIGHT + 1))
                 ;;
 
             "${ESC}[6~")
                 # PGDOWN
+                move_selection $((BODY_HEIGHT - 1))
+                ;;
+
+            "${ESC}[6;5~")
+                # ^PGDOWN
                 scroll $((BODY_HEIGHT - 1))
                 ;;
 
