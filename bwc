@@ -1,24 +1,44 @@
 #!/bin/bash
 set -e
+set -o posix
 
-cd "/usr/lib"
+cd "/etc"
 
-function shutdown() {
+function pause() {
     # disable mouse events
     echo -e "\e[?1000l"
     cls
     # clear the colour
-    echo -en "\033[39m\033[49m"
+    echo -en "\e[0m"
+    # show the cursor
+    echo -en "\e[?25h"
+}
+
+function unpause() {
+    # enable "extended" mouse inputs
+    echo -ne "\e[?1000h\e[?1006h"
+    # hide the cursor
+    echo -en "\e[?25l"
+    # redraw the screen
+    redraw
+}
+
+function shutdown() {
+    pause
 }
 trap shutdown EXIT
+
+function flush_read_buffer() {
+    while read -t 0 -rs; do
+        read -rsn 1
+    done
+}
 
 TERM_WIDTH=80
 TERM_HEIGHT=40
 function resize() {
     # clear read buffer
-    while read -t 0 -rs; do
-        true
-    done
+    flush_read_buffer
 
     cls
 
@@ -54,7 +74,7 @@ function redraw() {
     #cls
     
     # position "top left"
-    END=$((TERM_HEIGHT + SCROLL_POS))
+    local END=$((TERM_HEIGHT + SCROLL_POS))
     for (( i = SCROLL_POS; i < END; i++ )); do
         redraw_line $i
     done
@@ -73,11 +93,29 @@ function redraw_line() {
         # set the highlight colour
         echo -en "\033[48;5;57m"
     fi
+    
     # blank the line (with the highlight colour)
     echo -en "\e[2K"
 
     LINE="${FILE_LIST[$1]}"
-    if [ ${#LINE} -gt "$TERM_WIDTH" ]; then
+    META="${LINE%%$'\036'*}"
+
+    FILENAME_COLOR=""
+    case "${LINE::1}" in
+        "l")
+            FILENAME_COLOR="\033[38;11;33m"
+            ;;
+        "d")
+            FILENAME_COLOR="\033[38;5;33m"
+            ;;
+    esac
+
+    if [ ${#META} -gt $((TERM_WIDTH - 8)) ]; then
+        # hide metadata due to limited terminal width
+        LINE=$'\036'"${LINE##*$'\036'}"
+    fi
+
+    if [ "${#LINE}" -gt $TERM_WIDTH ]; then
         if [ "$1" -eq $SELECTED_FILE_INDEX ]; then
             # if the selected line is "too long",
             # attempt to show as much as possible of the filename.
@@ -86,10 +124,103 @@ function redraw_line() {
             LINE="${LINE:0:$((TERM_WIDTH - 3))}..."
         fi
     fi
-    echo -n "$LINE"
+
+    echo -en "${LINE%%$'\036'*}${FILENAME_COLOR}${LINE##*$'\036'}"
     
     # clear the colour
     echo -en "\033[39m\033[49m"
+}
+
+function formatter() {
+    # this ingests POSIX "find -ls" and reformats it how we want.
+    # less portably, we could use "find -printf" (but it's not
+    # available on a good number of systems).
+
+    # read will chomp leading whitespace, which we want.
+    cat - | tr -s ' ' | while read -sr LINE; do
+        # drop the first two columns (inode number and blocks on disk)
+        LINE="${LINE#* * }"
+        
+        PERMS="${LINE:0:10}"
+        LINE="${LINE#* }"
+
+        HARDLINKS="${LINE%% *}"
+        LINE="${LINE#* }"
+
+        OWNER="${LINE%% *}"
+        LINE="${LINE#* }"
+        
+        GROUP="${LINE%% *}"
+        LINE="${LINE#* }"
+
+        BYTES="${LINE%% *}"
+        LINE="${LINE#* }"
+
+        DATE1="${LINE%% *}"
+        LINE="${LINE#* }"
+        DATE2="${LINE%% *}"
+        LINE="${LINE#* }"
+        DATE3="${LINE%% *}"
+        LINE="${LINE#* }"
+
+        FILENAME="${LINE%%./}"
+        if [ "$FILENAME" != "." ]; then
+            FILENAME="${FILENAME:2}"
+        fi
+
+        if [ "$BYTES" -ge 1099511627776 ]; then
+            SIZE="$((BYTES / 1099511627776))TiB"
+        elif [ "$BYTES" -ge 1073741824 ]; then
+            SIZE="$((BYTES / 1073741824))GiB"
+        elif [ "$BYTES" -ge 1048576 ]; then
+            SIZE="$((BYTES / 1048576))MiB"
+        elif [ "$BYTES" -ge 1024 ]; then
+            SIZE="$((BYTES / 1024))KiB"
+        else
+            SIZE="${BYTES}B  "
+        fi
+
+        # ASCII \036 (field separator) is used to delimit the filename
+        printf "%s %5.5s %-8.8s %-8.8s %6.6s %3.3s %2.2s %-5.5s \036%s\n" "$PERMS" "$HARDLINKS" "$OWNER" "$GROUP" "$SIZE" "$DATE1" "$DATE2" "$DATE3" "$FILENAME"
+
+        # print on the columns we're interested in
+        #printf "%s %s %s %s" "${COLS[3]}" "${COLS[4]}" "${COLS[5]}" "${COLS[6]}"
+    done
+}
+
+function confirm() {
+    RESULT=127
+
+    # scroll selected file into view if it's off-screen
+    if [ "$SELECTED_FILE_INDEX" -lt $SCROLL_POS ] || [ "$SELECTED_FILE_INDEX" -gt $((SCROLL_POS + TERM_HEIGHT - 1)) ]; then
+        scroll_to_and_redraw
+    fi
+
+    # reposition the cursor
+    echo -en "\e[$((SELECTED_FILE_INDEX - SCROLL_POS + 1));1H"
+
+    # set the highlight colour
+    echo -en "\033[48;5;11m"
+
+    # blank the line (with the highlight colour)
+    echo -en "\e[2K"
+
+    # display the confirmation message
+    echo -n "$1 ('y' to confirm)"
+    
+    # clear the colour
+    echo -en "\033[39m\033[49m"
+
+    read -rsn 1 ANSWER
+    if [ "$ANSWER" == "y" ]; then
+        RESULT=0
+    fi
+    flush_read_buffer
+
+    # redraw the line back as it was
+    redraw_line $SELECTED_FILE_INDEX
+
+    return $RESULT
 }
 
 SCROLL_POS=0
@@ -98,34 +229,17 @@ FILE_LIST=()
 function change_directory() {
     CURRENT_DIRECTORY="$1"
     cd "$CURRENT_DIRECTORY"
-
+    
     # discard warnings about permission denied etc to /dev/null
-    mapfile -t FILE_LIST < <(find . -maxdepth 1 -printf "%M %y %4b %-7.7u %-7.7g %f\n" | sort -k 5 2> /dev/null)
+    #mapfile -t FILE_LIST < <(find . -maxdepth 1 -printf "%M %y %s %-7.7u %-7.7g %f\n" | sort -k 5 2> /dev/null)
+    mapfile -t FILE_LIST < <(POSIXLY_CORRECT=1 find . -maxdepth 1 -ls | formatter | sort -b -k 9 2> /dev/null)
     SCROLL_POS=0
     SELECTED_FILE_INDEX=0
 
     redraw
 }
 
-SELECTED_FILE_INDEX=0
-function move_selection() {
-    PREV_SELECTED_FILE_INDEX=$SELECTED_FILE_INDEX
-    if [ "$1" -lt 0 ] && [ $SELECTED_FILE_INDEX -gt 0 ]; then
-        # up
-        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
-        if [ $SELECTED_FILE_INDEX -lt 0 ]; then
-            # boundary enforcement (can't select beyond 0)
-            SELECTED_FILE_INDEX=0
-        fi
-    elif [ "$1" -gt 0 ] && [ $SELECTED_FILE_INDEX -lt $((${#FILE_LIST[@]} - 1)) ]; then
-        # down
-        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
-        if [ $SELECTED_FILE_INDEX -ge ${#FILE_LIST[@]} ]; then
-            # boundary enforcement (can't select beyond the end of the file list)
-            SELECTED_FILE_INDEX=$((${#FILE_LIST[@]} - 1))
-        fi
-    fi
-
+function scroll_to_and_redraw() {
     if [ $SELECTED_FILE_INDEX -lt $((SCROLL_POS + 1)) ] && [ $SCROLL_POS -gt 0 ]; then 
         # the screen needs to "scroll up"
         SCROLL_POS=$((SELECTED_FILE_INDEX - 1))
@@ -145,9 +259,31 @@ function move_selection() {
     fi
 }
 
+SELECTED_FILE_INDEX=0
+function move_selection() {
+    local PREV_SELECTED_FILE_INDEX=$SELECTED_FILE_INDEX
+    if [ "$1" -lt 0 ] && [ $SELECTED_FILE_INDEX -gt 0 ]; then
+        # up
+        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
+        if [ $SELECTED_FILE_INDEX -lt 0 ]; then
+            # boundary enforcement (can't select beyond 0)
+            SELECTED_FILE_INDEX=0
+        fi
+    elif [ "$1" -gt 0 ] && [ $SELECTED_FILE_INDEX -lt $((${#FILE_LIST[@]} - 1)) ]; then
+        # down
+        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
+        if [ $SELECTED_FILE_INDEX -ge ${#FILE_LIST[@]} ]; then
+            # boundary enforcement (can't select beyond the end of the file list)
+            SELECTED_FILE_INDEX=$((${#FILE_LIST[@]} - 1))
+        fi
+    fi
+
+    scroll_to_and_redraw
+}
+
 function scroll() {
     # allow scrolling down to a little "dead space" on the screen
-    MAX_SCROLL=$((${#FILE_LIST[@]} - 6))
+    local MAX_SCROLL=$((${#FILE_LIST[@]} - 6))
 
     if [ "$1" -lt 0 ] && [ $SCROLL_POS -gt 0 ]; then
         SCROLL_POS=$((SCROLL_POS + $1))
@@ -166,13 +302,62 @@ function scroll() {
 }
 
 function action_selected() {
-    if [ "$(get_selected_file_property 2)" == "d" ]; then
-        change_directory "$(get_selected_file_property 6-)"
+    local FILENAME
+    FILENAME="$(get_selected_file_property "name")"
+
+    if [ "$(get_selected_file_property "type")" == "l" ]; then
+      FILENAME="$(get_selected_file_property "target")"
+    fi
+
+    if [ -d "$FILENAME" ]; then
+        change_directory "$FILENAME"
+    elif [ -x "$FILENAME" ]; then
+        if confirm "Run ${FILENAME}?"; then
+            pause
+            # execute $FILENAME
+            {
+                set +e
+                "$FILENAME"
+                set -e
+                
+                echo " > Going back to BWC in 3 seconds..."
+                sleep 3
+            }
+            unpause
+        fi
+    elif [ -r "$FILENAME" ]; then
+        pause
+        {
+            less "$FILENAME"
+        }
+        unpause
     fi
 }
 
 function get_selected_file_property() {
-    printf "%s" "${FILE_LIST[$SELECTED_FILE_INDEX]}" | tr -s ' ' | cut -d ' ' -f "$1"
+    local SELECTED_FILE="${FILE_LIST[$SELECTED_FILE_INDEX]}"
+    case "$1" in
+        type)
+            echo -n "${SELECTED_FILE::1}"
+            ;;
+        name)
+            # ASCII \036 (field separator) is used to delimit the filename
+            FILENAME="${SELECTED_FILE##*$'\036'}"
+            if [ "${SELECTED_FILE::1}" == "l" ]; then
+                FILENAME="${FILENAME%->*}"
+            fi
+            echo -n "$FILENAME"
+            ;;
+        target)
+            if [ "${SELECTED_FILE::1}" != "l" ]; then
+                echo -n ""
+            fi
+            echo -n "${SELECTED_FILE##*-> }"
+            ;;
+        *)
+            echo "Unsupported file property" 1>&2
+            ;;
+    esac
 }
 
 # useful constants
@@ -182,9 +367,7 @@ BS="$(echo -ne "\b")"
 # start-up
 resize
 change_directory "$(pwd)"
-
-# enable "extended" mouse inputs
-echo -ne "\e[?1000h\e[?1006h"
+unpause
 
 # main loop
 ESC_CODE=""
@@ -211,6 +394,7 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
         #echo "hi"
     elif [ -n "$ESC_CODE" ]; then
         ESC_CODE="${ESC_CODE}${CHAR}"
+        CLEAR_ESC_CODE=1
         case "$ESC_CODE" in
             "${ESC}[<")
                 # mouse event
@@ -228,7 +412,7 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                         ;;
                 esac
 
-               # movecur 
+                # movecur 
                 #echo -ne "\nMOUSE $EVENT $M ( $X, $Y )"
                 case "$M" in
                     M)
@@ -263,42 +447,47 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                         LAST_CLICK_TICKS=$TICKS
                         ;;
                 esac
-                ESC_CODE="" ;;
+                ;;
             
             "${ESC}[A")
                 # UP
                 move_selection -1
-                ESC_CODE="" ;;
+                ;;
 
             "${ESC}[B")
                 # DOWN
                 move_selection 1
-                ESC_CODE="" ;;
+                ;;
 
             "${ESC}[C")
                 # RIGHT
-                ESC_CODE="" ;;
+                ;;
 
             "${ESC}[D")
                 # LEFT
-                ESC_CODE="" ;;
+                ;;
             
             "${ESC}[5~")
                 # PGUP
                 scroll $((0 - TERM_HEIGHT + 1))
-                ESC_CODE="" ;;
+                ;;
 
             "${ESC}[6~")
                 # PGDOWN
                 scroll $((TERM_HEIGHT - 1))
-                ESC_CODE="" ;;
+                ;;
 
             *)
+                CLEAR_ESC_CODE=0
                 if [ ${#ESC_CODE} -gt 10 ]; then
                     echo "SOMETHING BROKE #1: $ESC_CODE"
                 fi
             ;;
         esac
+
+        if [ $CLEAR_ESC_CODE -eq 1 ]; then
+            ESC_CODE=""
+        fi
     else
         #printf "%3d" "'$CHAR"
         case "$CHAR" in
