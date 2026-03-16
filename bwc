@@ -4,6 +4,11 @@ set -o posix
 
 cd "/etc"
 
+# useful constants
+HEADER_HEIGHT=1
+FOOTER_HEIGHT=1
+ESC="$(echo -ne "\e")"
+
 function pause() {
     # disable mouse events
     echo -e "\e[?1000l"
@@ -34,13 +39,9 @@ function flush_read_buffer() {
     done
 }
 
-HEADER_HEIGHT=1
-FOOTER_HEIGHT=1
-
 TERM_WIDTH=80   # placeholder ... will be set correctly by initial resize
 TERM_HEIGHT=40  # placeholder ... will be set correctly by initial resize
 BODY_HEIGHT=38  # placeholder ... will be set correctly by initial resize
-
 function resize() {
     # clear read buffer
     flush_read_buffer
@@ -76,10 +77,11 @@ function cls() {
     echo -en "\e[2J\e[1;1H"
 }
 
+FOOTER=""
 function redraw() {
-    # menu at top
-    echo -en "\e[1;1H"
-    echo -en "--> MENU <--"
+    # header reposition, colouring, and blanking
+    echo -en "\e[1;1H\033[48;5;19m\e[2K"
+    echo -en "> $(pwd)"
 
     # file list area
     local END=$((BODY_HEIGHT + SCROLL_POS))
@@ -87,9 +89,9 @@ function redraw() {
         redraw_line $i
     done
 
-    # summary at bottom
+    # footer
     echo -en "\e[$TERM_HEIGHT;1H"
-    echo -en "--> summary bar <--"
+    echo -en "$FOOTER"
 }
 
 function redraw_line() {
@@ -114,11 +116,15 @@ function redraw_line() {
 
     FILENAME_COLOR=""
     case "${LINE::1}" in
-        "l")
-            FILENAME_COLOR="\033[38;11;33m"
+        l)
+            FILENAME_COLOR="\033[38;5;120m"
             ;;
-        "d")
-            FILENAME_COLOR="\033[38;5;33m"
+        d)
+            if [ "$1" -eq $SELECTED_FILE_INDEX ]; then
+                FILENAME_COLOR="\033[38;5;159m"
+            else
+                FILENAME_COLOR="\033[38;5;33m"
+            fi
             ;;
     esac
 
@@ -178,7 +184,7 @@ function formatter() {
         DATE3="${LINE%% *}"
         LINE="${LINE#* }"
 
-        FILENAME="${LINE% *}"
+        FILENAME="$LINE"
 
         if [ ${#OWNER} -gt 9 ]; then
             OWNER="${OWNER:0:8}~"
@@ -382,10 +388,6 @@ function get_selected_file_property() {
             ;;
     esac
 }
-
-# useful constants
-ESC="$(echo -ne "\e")"
-BS="$(echo -ne "\b")"
 
 # start-up
 resize
