@@ -77,11 +77,12 @@ function cls() {
     echo -en "\e[2J\e[1;1H"
 }
 
-FOOTER=""
 function redraw() {
     # header reposition, colouring, and blanking
     echo -en "\e[1;1H\033[48;5;19m\e[2K"
-    echo -en "> $(pwd)"
+    WD="$(pwd)"
+    echo -en "bwc> ${WD:0:$((TERM_WIDTH - 5))}"
+    echo -en "\e[0m"
 
     # file list area
     local END=$((BODY_HEIGHT + SCROLL_POS))
@@ -90,8 +91,11 @@ function redraw() {
     done
 
     # footer
-    echo -en "\e[$TERM_HEIGHT;1H"
-    echo -en "$FOOTER"
+    echo -en "\e[$TERM_HEIGHT;1H\033[48;5;19m\e[2K"
+    echo -en " (q)uit  (s)crn_rfsh"
+
+    # clear all colours
+    echo -en "\e[0m"
 }
 
 function redraw_line() {
@@ -137,7 +141,11 @@ function redraw_line() {
         if [ "$1" -eq $SELECTED_FILE_INDEX ]; then
             # if the selected line is "too long",
             # attempt to show as much as possible of the filename.
-            LINE="${LINE:$((${#LINE} - TERM_WIDTH)):$TERM_WIDTH}"
+            LINE="${LINE:$((${#LINE} - TERM_WIDTH))}"
+
+            if [[ "$LINE" != *$'\036'* ]]; then
+                LINE=$'\036'"$LINE"
+            fi
         else
             LINE="${LINE:0:$((TERM_WIDTH - 3))}..."
         fi
@@ -146,22 +154,19 @@ function redraw_line() {
     echo -en "${LINE%%$'\036'*}${FILENAME_COLOR}${LINE##*$'\036'}"
     
     # clear the colour
-    echo -en "\033[39m\033[49m"
+    echo -en "\e[0m"
 }
 
 function formatter() {
-    # this ingests POSIX "find -ls" and reformats it how we want.
+    # this ingests POSIX "ls -l" and reformats it how we want.
     # less portably, we could use "find -printf" (but it's not
     # available on a good number of systems).
 
+    # discard the first line
+    read -sr
+
     # read will chomp leading whitespace, which we want.
-    i=0
     cat - | tr -s ' ' | while read -sr LINE; do
-        if [ $i -eq 0 ]; then
-            i=$((i + 1))
-            continue
-        fi
-        
         PERMS="${LINE:0:10}"
         LINE="${LINE#* }"
 
@@ -235,7 +240,7 @@ function confirm() {
     echo -n "$1 ('y' to confirm)"
     
     # clear the colour
-    echo -en "\033[39m\033[49m"
+    echo -en "\e[0m"
 
     read -rsn 1 ANSWER
     if [ "$ANSWER" == "y" ]; then
@@ -518,6 +523,10 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
         case "$CHAR" in
             s)
                 cls
+                redraw
+                ;;
+            q)
+                exit
                 ;;
             $'\n')
                 # enter key
