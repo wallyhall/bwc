@@ -4,7 +4,7 @@ The right question is nearly always "should we", not "can we".
 
 This repository is the exception to the rule.
 
-"Hoc facimus non quia debemus sed quia possumus."  ("__b__ecause __w__e __c__an.")
+"Hoc facimus non quia debemus sed quia possumus."  ("<u>b</u>ecause <u>w</u>e <u>c</u>an.")
 
 ## AI free code
 
