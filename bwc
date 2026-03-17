@@ -109,7 +109,7 @@ function redraw() {
 
     # footer
     echo -en "\e[$TERM_HEIGHT;1H\033[48;5;19m\e[2K"
-    echo -en " (q)uit  (s)crn_rfsh  (bskp).."
+    echo -en " (q)uit  (s)crn_rfsh  (bskp)..  (i)nfo"
 
     # clear all colours
     echo -en "\e[0m"
@@ -239,6 +239,10 @@ function formatter() {
     done
 }
 
+function cursor_to_selected() {
+    echo -en "\e[$((SELECTED_FILE_INDEX - SCROLL_POS + 1 + HEADER_HEIGHT));1H"
+}
+
 # display a confirmation prompt for file actions
 function confirm() {
     local RESULT=127
@@ -247,7 +251,7 @@ function confirm() {
     scroll_to_selected
 
     # reposition the cursor
-    echo -en "\e[$((SELECTED_FILE_INDEX - SCROLL_POS + 1 + HEADER_HEIGHT));1H"
+    cursor_to_selected
 
     # set the highlight colour
     echo -en "\033[48;5;11m"
@@ -278,7 +282,24 @@ CURRENT_DIRECTORY=""
 FILE_LIST=()
 function change_directory() {
     CURRENT_DIRECTORY="$1"
-    cd "$CURRENT_DIRECTORY"
+
+    if ! cd "$CURRENT_DIRECTORY" 2>/dev/null; then
+        # reposition the cursor
+        cursor_to_selected
+
+        # set the highlight colour
+        echo -en "\033[48;5;8m"
+
+        # blank the line (with the highlight colour)
+        echo -en "\e[2K"
+        
+        # print a failure message
+        echo -n "! --> Unable to change directory"
+
+        # clear the colour
+        echo -en "\e[0m"
+        return
+    fi
     
     # discard warnings about permission denied etc to /dev/null
     # any POSIX system should work with `ls -l`.  On fewer platforms, find could be used:
@@ -417,7 +438,7 @@ function get_selected_file_property() {
             # ASCII \036 (field separator) is used to delimit the filename
             FILENAME="${SELECTED_FILE##*$'\036'}"
             if [ "${SELECTED_FILE::1}" == "l" ]; then
-                FILENAME="${FILENAME%->*}"
+                FILENAME="${FILENAME% ->*}"
             fi
             echo -n "$FILENAME"
             ;;
@@ -590,9 +611,17 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                 # backspace
                 change_directory '..'
                 ;;
+            i)
+                pause
+                {
+                    stat "$(get_selected_file_property "name")" || true
+                }
+                read -rn 1
+                unpause
+                ;;
             *)
                 # keypress
-                echo -ne "$CHAR"
+                #echo -ne "$CHAR"
                 # TODO - allow custom keybindings
                 ;;
         esac
