@@ -1,14 +1,12 @@
 #!/bin/bash
 set -e
-set -o posix
 
-cd "/etc"
-
-# useful constants
+# magic/constant numbers and strings
 HEADER_HEIGHT=1
 FOOTER_HEIGHT=1
 ESC="$(echo -ne "\e")"
 
+# "pause" (relinquish) our handling of the terminal
 function pause() {
     # disable mouse events
     echo -e "\e[?1000l"
@@ -19,6 +17,7 @@ function pause() {
     echo -en "\e[?25h"
 }
 
+# "unpause" (take back) our handling of the terminal
 function unpause() {
     # enable "extended" mouse inputs
     echo -ne "\e[?1000h\e[?1006h"
@@ -28,17 +27,20 @@ function unpause() {
     redraw
 }
 
+# clean-up for a final exit
 function shutdown() {
     pause
 }
 trap shutdown EXIT
 
+# flush and discard anything in the terminal input buffer
 function flush_read_buffer() {
     while read -t 0 -rs; do
         read -rsn 1
     done
 }
 
+# handle resizing of the terminal
 TERM_WIDTH=80   # placeholder ... will be set correctly by initial resize
 TERM_HEIGHT=40  # placeholder ... will be set correctly by initial resize
 BODY_HEIGHT=38  # placeholder ... will be set correctly by initial resize
@@ -46,6 +48,7 @@ function resize() {
     # clear read buffer
     flush_read_buffer
 
+    # clear the screen (possibly redundant, but better safe than embarrased)
     cls
 
     # try to position the cursor to (near) infinity
@@ -66,17 +69,25 @@ function resize() {
 RESIZE_ON_NEXT_TICK=0
 trap 'RESIZE_ON_NEXT_TICK=1' SIGWINCH
 
+# to allow signal handling and double-clicks etc, the main loop times
+# out periodically (every "tick").
+# anything in this function will be executed on every tick. 
 TICKS=0
 function ticktock() {
-    #echo -e "\e[2J\e[2JTERM: ($TERM_WIDTH x $TERM_HEIGHT) $(date)"
-    #echo -en ""
     TICKS=$((TICKS + 1))
+
+    if [ $RESIZE_ON_NEXT_TICK -eq 1 ]; then
+        resize
+        RESIZE_ON_NEXT_TICK=0
+    fi
 }
 
+# clear screen
 function cls() {
     echo -en "\e[2J\e[1;1H"
 }
 
+# redraw the entire screen
 function redraw() {
     # header reposition, colouring, and blanking
     echo -en "\e[1;1H\033[48;5;19m\e[2K"
@@ -98,6 +109,7 @@ function redraw() {
     echo -en "\e[0m"
 }
 
+# redraw a line in the file browser
 function redraw_line() {
     # nothing to do if file index is outside visible area
     if [ "$1" -lt $SCROLL_POS ] || [ "$1" -gt $((SCROLL_POS + BODY_HEIGHT - 1)) ]; then
@@ -115,10 +127,10 @@ function redraw_line() {
     # blank the line (with the highlight colour)
     echo -en "\e[2K"
 
-    LINE="${FILE_LIST[$1]}"
-    META="${LINE%%$'\036'*}"
+    local LINE="${FILE_LIST[$1]}"
+    local META="${LINE%%$'\036'*}"
 
-    FILENAME_COLOR=""
+    local FILENAME_COLOR=""
     case "${LINE::1}" in
         l)
             FILENAME_COLOR="\033[38;5;120m"
@@ -157,6 +169,7 @@ function redraw_line() {
     echo -en "\e[0m"
 }
 
+# deal with inconsistencies in how systems output `ls -l`
 function formatter() {
     # this ingests POSIX "ls -l" and reformats it how we want.
     # less portably, we could use "find -printf" (but it's not
@@ -167,29 +180,29 @@ function formatter() {
 
     # read will chomp leading whitespace, which we want.
     cat - | tr -s ' ' | while read -sr LINE; do
-        PERMS="${LINE:0:10}"
+        local PERMS="${LINE:0:10}"
         LINE="${LINE#* }"
 
-        HARDLINKS="${LINE%% *}"
+        local HARDLINKS="${LINE%% *}"
         LINE="${LINE#* }"
 
-        OWNER="${LINE%% *}"
+        local OWNER="${LINE%% *}"
         LINE="${LINE#* }"
         
-        GROUP="${LINE%% *}"
+        local GROUP="${LINE%% *}"
         LINE="${LINE#* }"
 
-        BYTES="${LINE%% *}"
+        local BYTES="${LINE%% *}"
         LINE="${LINE#* }"
 
-        DATE1="${LINE%% *}"
+        local DATE1="${LINE%% *}"
         LINE="${LINE#* }"
-        DATE2="${LINE%% *}"
+        local DATE2="${LINE%% *}"
         LINE="${LINE#* }"
-        DATE3="${LINE%% *}"
+        local DATE3="${LINE%% *}"
         LINE="${LINE#* }"
 
-        FILENAME="$LINE"
+        local FILENAME="$LINE"
 
         if [ ${#OWNER} -gt 9 ]; then
             OWNER="${OWNER:0:8}~"
@@ -199,6 +212,7 @@ function formatter() {
             GROUP="${GROUP:0:8}~"
         fi
 
+        local SIZE
         if [ "$BYTES" -ge 1099511627776 ]; then
             SIZE="$((BYTES / 1099511627776))T"
         elif [ "$BYTES" -ge 1073741824 ]; then
@@ -219,8 +233,9 @@ function formatter() {
     done
 }
 
+# display a confirmation prompt for file actions
 function confirm() {
-    RESULT=127
+    local RESULT=127
 
     # scroll selected file into view if it's off-screen
     if [ "$SELECTED_FILE_INDEX" -lt $SCROLL_POS ] || [ "$SELECTED_FILE_INDEX" -gt $((SCROLL_POS + BODY_HEIGHT - 1)) ]; then
@@ -273,6 +288,7 @@ function change_directory() {
     redraw
 }
 
+# reposition the file browser (up/down) without changing file selection
 function scroll_to_and_redraw() {
     if [ $SELECTED_FILE_INDEX -lt $((SCROLL_POS + 1)) ] && [ $SCROLL_POS -gt 0 ]; then 
         # the screen needs to "scroll up"
@@ -293,6 +309,7 @@ function scroll_to_and_redraw() {
     fi
 }
 
+# change file selection (up/down)
 SELECTED_FILE_INDEX=0
 function move_selection() {
     local PREV_SELECTED_FILE_INDEX=$SELECTED_FILE_INDEX
@@ -315,6 +332,7 @@ function move_selection() {
     scroll_to_and_redraw
 }
 
+# higher-level scroll handler (notably for mouse-wheel/pgup/pgdn)
 function scroll() {
     # allow scrolling down to a little "dead space" on the screen
     local MAX_SCROLL=$((${#FILE_LIST[@]} - 6))
@@ -335,6 +353,7 @@ function scroll() {
     fi
 }
 
+# "file actioned" handler (user double-clicked or pressed enter and confirmed)
 function action_selected() {
     local FILENAME
     FILENAME="$(get_selected_file_property "name")"
@@ -361,6 +380,7 @@ function action_selected() {
         fi
     elif [ -r "$FILENAME" ]; then
         pause
+        # read $FILENAME
         {
             less "$FILENAME"
         }
@@ -368,6 +388,7 @@ function action_selected() {
     fi
 }
 
+# retrieve information about the selected file
 function get_selected_file_property() {
     local SELECTED_FILE="${FILE_LIST[$SELECTED_FILE_INDEX]}"
     case "$1" in
@@ -406,23 +427,21 @@ LAST_CLICK_TICKS=-1
 LAST_CLICKED_FILE_INDEX=-1
 # note -t essentially sets double click speed, as well as visual refresh of clocks etc
 while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
+    # nothing in the terminal input buffer.
     if [ $TICKTOCK -eq 1 ]; then
         TICKTOCK=0
-
-        if [ $RESIZE_ON_NEXT_TICK -eq 1 ]; then
-            resize
-            RESIZE_ON_NEXT_TICK=0
-        fi
-
         ticktock
         continue
     fi
 
+    # input debug
     #printf "%3d" "'$CHAR"
+
     if [ "$CHAR" == "$ESC" ]; then
+        # start of escape sequence
         ESC_CODE="$ESC"
-        #echo "hi"
     elif [ -n "$ESC_CODE" ]; then
+        # continuation of escape sequence
         ESC_CODE="${ESC_CODE}${CHAR}"
         CLEAR_ESC_CODE=1
         case "$ESC_CODE" in
@@ -519,6 +538,9 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
 
             *)
                 CLEAR_ESC_CODE=0
+
+                # TODO - allow custom keybindings
+
                 if [ ${#ESC_CODE} -gt 10 ]; then
                     echo "SOMETHING BROKE #1: $ESC_CODE"
                 fi
@@ -529,7 +551,11 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
             ESC_CODE=""
         fi
     else
+        # any other input
+
+        # input debug
         #printf "%3d" "'$CHAR"
+
         case "$CHAR" in
             s)
                 cls
@@ -549,7 +575,7 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
             *)
                 # keypress
                 echo -ne "$CHAR"
-                
+                # TODO - allow custom keybindings
                 ;;
         esac
     fi
