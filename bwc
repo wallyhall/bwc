@@ -8,17 +8,20 @@ ESC="$(echo -ne "\e")"
 
 # "pause" (relinquish) our handling of the terminal
 function pause() {
+    # echo terminal inputs
+    stty echo
     # disable mouse events
     echo -e "\e[?1000l"
-    cls
-    # clear the colour
-    echo -en "\e[0m"
     # show the cursor
     echo -en "\e[?25h"
+    # clear the screen
+    cls
 }
 
 # "unpause" (take back) our handling of the terminal
 function unpause() {
+    # don't echo terminal inputs
+    stty -echo
     # enable "extended" mouse inputs
     echo -ne "\e[?1000h\e[?1006h"
     # hide the cursor
@@ -82,9 +85,12 @@ function ticktock() {
     fi
 }
 
-# clear screen
+# clear/reset the terminal screen
 function cls() {
+    # clear the screen
     echo -en "\e[2J\e[1;1H"
+    # reset colours
+    echo -en "\e[0m"
 }
 
 # redraw the entire screen
@@ -117,7 +123,7 @@ function redraw_line() {
     fi
 
     # reposition the cursor
-    echo -en "\e[$(($1 - SCROLL_POS + 2));1H"
+    echo -en "\e[$(($1 - SCROLL_POS + 1 + HEADER_HEIGHT));1H"
 
     if [ "$1" -eq $SELECTED_FILE_INDEX ]; then
         # set the highlight colour
@@ -238,9 +244,7 @@ function confirm() {
     local RESULT=127
 
     # scroll selected file into view if it's off-screen
-    if [ "$SELECTED_FILE_INDEX" -lt $SCROLL_POS ] || [ "$SELECTED_FILE_INDEX" -gt $((SCROLL_POS + BODY_HEIGHT - 1)) ]; then
-        scroll_to_and_redraw
-    fi
+    scroll_to_selected
 
     # reposition the cursor
     echo -en "\e[$((SELECTED_FILE_INDEX - SCROLL_POS + 1 + HEADER_HEIGHT));1H"
@@ -288,52 +292,18 @@ function change_directory() {
     redraw
 }
 
-# reposition the file browser (up/down) without changing file selection
-function scroll_to_and_redraw() {
-    if [ $SELECTED_FILE_INDEX -lt $((SCROLL_POS + 1)) ] && [ $SCROLL_POS -gt 0 ]; then 
-        # the screen needs to "scroll up"
-        SCROLL_POS=$((SELECTED_FILE_INDEX - 1))
-        if [ $SCROLL_POS -lt 0 ]; then
-            # boundary enforcement (can't scroll beyond 0)
-            SCROLL_POS=0
-        fi
-        redraw
+function is_selected_offscreen() {
+    if [ $SELECTED_FILE_INDEX -lt $((SCROLL_POS + 1)) ] && [ $SCROLL_POS -gt 0 ]; then
+        echo -n "-1"
     elif [ $SELECTED_FILE_INDEX -gt $((SCROLL_POS + BODY_HEIGHT - 2)) ]; then
-        # the screen needs to "scroll down"
-        SCROLL_POS=$((SELECTED_FILE_INDEX - BODY_HEIGHT + 2))
-        redraw
+        echo -n "1"
     else
-        # partial redraw only
-        redraw_line $PREV_SELECTED_FILE_INDEX
-        redraw_line $SELECTED_FILE_INDEX
+        echo -n "0"
     fi
-}
-
-# change file selection (up/down)
-SELECTED_FILE_INDEX=0
-function move_selection() {
-    local PREV_SELECTED_FILE_INDEX=$SELECTED_FILE_INDEX
-    if [ "$1" -lt 0 ] && [ $SELECTED_FILE_INDEX -gt 0 ]; then
-        # up
-        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
-        if [ $SELECTED_FILE_INDEX -lt 0 ]; then
-            # boundary enforcement (can't select beyond 0)
-            SELECTED_FILE_INDEX=0
-        fi
-    elif [ "$1" -gt 0 ] && [ $SELECTED_FILE_INDEX -lt $((${#FILE_LIST[@]} - 1)) ]; then
-        # down
-        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
-        if [ $SELECTED_FILE_INDEX -ge ${#FILE_LIST[@]} ]; then
-            # boundary enforcement (can't select beyond the end of the file list)
-            SELECTED_FILE_INDEX=$((${#FILE_LIST[@]} - 1))
-        fi
-    fi
-
-    scroll_to_and_redraw
 }
 
 # higher-level scroll handler (notably for mouse-wheel/pgup/pgdn)
-function scroll() {
+function scroll_by() {
     # allow scrolling down to a little "dead space" on the screen
     local MAX_SCROLL=$((${#FILE_LIST[@]} - 6))
 
@@ -351,6 +321,54 @@ function scroll() {
         fi
         redraw
     fi
+}
+
+# reposition the file browser (up/down) without changing file selection
+function scroll_to_selected() {
+    case "$(is_selected_offscreen)" in
+        -1)
+            # the screen needs to "scroll up"
+            scroll_by $((SELECTED_FILE_INDEX - 1 - SCROLL_POS))
+            ;;
+        1)
+            # the screen needs to "scroll down"
+            scroll_by $((SELECTED_FILE_INDEX - BODY_HEIGHT + 2 - SCROLL_POS))
+            ;;
+    esac
+}
+
+# change file selection (up/down)
+SELECTED_FILE_INDEX=0
+PREV_SELECTED_FILE_INDEX=0
+function move_by() {
+    PREV_SELECTED_FILE_INDEX=$SELECTED_FILE_INDEX
+    if [ "$1" -lt 0 ] && [ $SELECTED_FILE_INDEX -gt 0 ]; then
+        # up
+        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
+        if [ $SELECTED_FILE_INDEX -lt 0 ]; then
+            # boundary enforcement (can't select beyond 0)
+            SELECTED_FILE_INDEX=0
+        fi
+    elif [ "$1" -gt 0 ] && [ $SELECTED_FILE_INDEX -lt $((${#FILE_LIST[@]} - 1)) ]; then
+        # down
+        SELECTED_FILE_INDEX=$((SELECTED_FILE_INDEX + $1))
+        if [ $SELECTED_FILE_INDEX -ge ${#FILE_LIST[@]} ]; then
+            # boundary enforcement (can't select beyond the end of the file list)
+            SELECTED_FILE_INDEX=$((${#FILE_LIST[@]} - 1))
+        fi
+    fi
+
+    if [ "$(is_selected_offscreen)" -eq 0 ]; then
+        # no scrolling required, partial redraw only
+        redraw_line $PREV_SELECTED_FILE_INDEX
+        redraw_line $SELECTED_FILE_INDEX
+    else
+        scroll_to_selected
+    fi
+}
+
+function move_to() {
+    move_by $(($1 - SELECTED_FILE_INDEX))
 }
 
 # "file actioned" handler (user double-clicked or pressed enter and confirmed)
@@ -469,11 +487,11 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                         case "$EVENT" in
                             64)
                                 # scroll up
-                                scroll -1
+                                scroll_by -1
                                 ;;
                             65)
                                 # scroll down
-                                scroll 1
+                                scroll_by 1
                                 ;;
                         esac
                         ;;
@@ -489,7 +507,7 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
                             LAST_CLICK_TICKS=-1
                         else
                             # single click
-                            move_selection $((CLICKED_FILE_INDEX - SELECTED_FILE_INDEX))
+                            move_to $CLICKED_FILE_INDEX
                         fi
 
                         LAST_CLICKED_FILE_INDEX=$CLICKED_FILE_INDEX
@@ -500,12 +518,12 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
             
             "${ESC}[A")
                 # UP
-                move_selection -1
+                move_by -1
                 ;;
 
             "${ESC}[B")
                 # DOWN
-                move_selection 1
+                move_by 1
                 ;;
 
             "${ESC}[C")
@@ -518,22 +536,22 @@ while read -t 0.5 -rs -N 1 CHAR || TICKTOCK=1; do
             
             "${ESC}[5~")
                 # PGUP
-                move_selection $((0 - BODY_HEIGHT + 1))
+                move_by $((0 - BODY_HEIGHT + 1))
                 ;;
 
             "${ESC}[5;5~")
                 # ^PGUP
-                scroll $((0 - BODY_HEIGHT + 1))
+                scroll_by $((0 - BODY_HEIGHT + 1))
                 ;;
 
             "${ESC}[6~")
                 # PGDOWN
-                move_selection $((BODY_HEIGHT - 1))
+                move_by $((BODY_HEIGHT - 1))
                 ;;
 
             "${ESC}[6;5~")
                 # ^PGDOWN
-                scroll $((BODY_HEIGHT - 1))
+                scroll_by $((BODY_HEIGHT - 1))
                 ;;
 
             *)
